@@ -53,7 +53,6 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
   const lastUserSpeechTimeRef = useRef<number>(Date.now());
   const fullTranscriptHistory = useRef<string[]>([]);
   const isWaitingForResponseRef = useRef<boolean>(false);
-  const tabSwitchCountRef = useRef<number>(0);
 
   // --- CLEANUP ---
   const disconnect = () => {
@@ -89,7 +88,7 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
       }, 2000);
   };
 
-  // --- VISUALIZER LOGIC (Fixed) ---
+  // --- VISUALIZER LOGIC ---
   const drawVisualizer = () => {
       const canvas = canvasRef.current;
       const analyser = analyserRef.current;
@@ -123,7 +122,7 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
           const avg = sum / bufferLength;
           const volume = Math.min(avg / 50, 1);
 
-          // --- Robot Mouth Animation ---
+          // Mouth Animation
           if (mouthRef.current) {
               const baseRy = 2;
               const maxRy = 8;
@@ -131,7 +130,7 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
               mouthRef.current.setAttribute('ry', currentRy.toFixed(2));
           }
 
-          // --- Orb Animation ---
+          // Orb Animation
           const baseColor = isAiSpeakingRef.current ? '99, 102, 241' : isUserSpeaking ? '16, 185, 129' : '139, 92, 246';
           const radius = 60 + (volume * 30);
 
@@ -164,14 +163,10 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
         const ai = new GoogleGenAI({ apiKey });
         const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
         
-        // 1. Output Audio Context (No forced sampleRate to prevent hardware issues)
+        // 1. Output Audio Context
         const audioContext = new AudioContextClass(); 
         audioContextRef.current = audioContext;
-        
-        // *** CRITICAL FIX: Resume Audio Context immediately ***
-        if (audioContext.state === 'suspended') {
-            await audioContext.resume();
-        }
+        if (audioContext.state === 'suspended') await audioContext.resume();
 
         const analyser = audioContext.createAnalyser();
         analyser.fftSize = 256;
@@ -202,9 +197,10 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
               setStatus('connected');
               isConnectedRef.current = true;
               
-              // *** CRITICAL FIX: Poke the AI to speak first ***
+              // *** TRIGGER AI SPEECH IMMEDIATELY ***
               const session = await sessionPromise;
-              session.sendRealtimeInput([{ text: "Hello, I am ready for the interview." }]);
+              // Sending this empty text message forces the model to generate the first turn based on system instructions
+              session.sendRealtimeInput([{ text: "The user has joined. Introduce yourself immediately." }]);
 
               scriptProcessor.onaudioprocess = (e) => {
                  if (!isConnectedRef.current) return;
@@ -251,7 +247,6 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
 
                 if (message.serverContent?.modelTurn?.parts?.[0]?.inlineData) {
                     const audioData = message.serverContent.modelTurn.parts[0].inlineData.data;
-                    // Decode 24k audio to context rate
                     const buffer = await decodeAudioData(decode(audioData), audioContext, 24000, 1);
                     
                     const src = audioContext.createBufferSource();
@@ -280,13 +275,18 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
             tools: [{ functionDeclarations: [endInterviewTool] }],
             systemInstruction: {
               parts: [{
-                text: `You are Interna, developed by Internadda. 
-                       Candidate: ${candidate.name}, Role: ${candidate.field}.
+                text: `You are Interna, an AI Interviewer developed by Internadda. 
+                       Candidate Name: ${candidate.name}
+                       Role: ${candidate.field}
+                       Context: ${candidate.jobDescription.substring(0, 1000)}
                        
-                       PROTOCOL:
-                       1. Start immediately by introducing yourself as Interna from Internadda.
-                       2. Ask 5 technical questions one by one.
-                       3. After 5 questions, say "This concludes our interview" and call 'endInterview'.
+                       **INTERVIEW PROTOCOL:**
+                       1. **IMMEDIATE INTRO:** As soon as you connect, say: "Hello ${candidate.name}, I am Interna, your AI interviewer from Internadda. Welcome to your assessment for the ${candidate.field} role. Let's begin."
+                       2. **BEHAVIORAL START:** Ask ONE quick behavioral question (e.g., "Tell me about yourself" or "Why this role?").
+                       3. **TECHNICAL LOOP (5 Questions):** - Ask 5 technical questions relevant to the role/context.
+                          - Ask one by one. Wait for the answer.
+                          - Acknowledge the answer briefly (e.g., "Good point", "Understood") before moving to the next.
+                       4. **CONCLUSION:** After the 5th technical question, say: "Thank you, this concludes our interview." and IMMEDIATELY call the 'endInterview' tool.
                        `
               }]
             }
@@ -298,7 +298,6 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
 
     initSession();
 
-    // Timers
     const timerInterval = setInterval(() => {
         setTimeLeft(prev => {
             if (prev <= 1) { handleTermination("Time Limit"); return 0; }
