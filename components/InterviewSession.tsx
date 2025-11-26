@@ -8,7 +8,6 @@ interface InterviewSessionProps {
   onComplete: (transcript: string, terminationReason?: string) => void;
 }
 
-// Tool definition to let AI end the interview
 const endInterviewTool: FunctionDeclaration = {
   name: "endInterview",
   description: "Ends the interview session. Call this when 5 questions are completed or the user requests to end.",
@@ -30,11 +29,10 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
   const [showTranscript, setShowTranscript] = useState(false);
   const [transcriptLines, setTranscriptLines] = useState<{speaker: 'user' | 'ai', text: string}[]>([]);
   const [isUserSpeaking, setIsUserSpeaking] = useState(false);
-  const [silenceTriggered, setSilenceTriggered] = useState(false);
   const [systemMessageStatus, setSystemMessageStatus] = useState<string | null>(null);
-  const [timeLeft, setTimeLeft] = useState(600); // 10 Minutes
+  const [timeLeft, setTimeLeft] = useState(600);
 
-  // Refs for Audio & Connection
+  // Refs
   const isMountedRef = useRef<boolean>(false);
   const audioContextRef = useRef<AudioContext | null>(null);
   const inputAudioContextRef = useRef<AudioContext | null>(null);
@@ -50,67 +48,48 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
   const terminationTriggeredRef = useRef<boolean>(false);
   const isConnectedRef = useRef<boolean>(false);
   const isAiSpeakingRef = useRef<boolean>(false);
+  
+  const mouthRef = useRef<SVGEllipseElement>(null);
   const lastUserSpeechTimeRef = useRef<number>(Date.now());
   const fullTranscriptHistory = useRef<string[]>([]);
   const isWaitingForResponseRef = useRef<boolean>(false);
-  
-  // Proctoring Refs
   const tabSwitchCountRef = useRef<number>(0);
-  const silenceWarningCountRef = useRef<number>(0);
 
-  // --- 1. CLEANUP & TERMINATION ---
+  // --- CLEANUP ---
   const disconnect = () => {
     isConnectedRef.current = false;
-    
     if (scriptProcessorRef.current) {
         scriptProcessorRef.current.onaudioprocess = null;
         scriptProcessorRef.current.disconnect();
         scriptProcessorRef.current = null;
     }
-    
     if (sessionRef.current) {
-      try {
-          sessionRef.current.close();
-      } catch (e) { console.error(e); }
+      try { sessionRef.current.close(); } catch (e) {}
       sessionRef.current = null;
     }
-
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
       streamRef.current = null;
     }
-
-    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
-       audioContextRef.current.close();
-    }
-    if (inputAudioContextRef.current && inputAudioContextRef.current.state !== 'closed') {
-       inputAudioContextRef.current.close();
-    }
-
-    if (animationRef.current) {
-        cancelAnimationFrame(animationRef.current);
-    }
-
-    sourcesRef.current.forEach(source => {
-      try { source.stop(); } catch(e) {}
-    });
+    if (audioContextRef.current) audioContextRef.current.close();
+    if (inputAudioContextRef.current) inputAudioContextRef.current.close();
+    if (animationRef.current) cancelAnimationFrame(animationRef.current);
+    
+    sourcesRef.current.forEach(source => { try { source.stop(); } catch(e) {} });
     sourcesRef.current.clear();
   };
 
   const handleTermination = (reason: string) => {
       if (terminationTriggeredRef.current) return;
       terminationTriggeredRef.current = true;
-      
       setSystemMessageStatus(`Ending: ${reason}`);
-      
-      // Give UI a moment to show the message before unmounting
       setTimeout(() => {
           disconnect();
           onComplete(fullTranscriptHistory.current.join('\n'), reason);
       }, 2000);
   };
 
-  // --- 2. VISUALIZER (The "Orb") ---
+  // --- VISUALIZER LOGIC (Fixed) ---
   const drawVisualizer = () => {
       const canvas = canvasRef.current;
       const analyser = analyserRef.current;
@@ -127,8 +106,7 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
           animationRef.current = requestAnimationFrame(draw);
           analyser.getByteFrequencyData(dataArray);
 
-          // Auto-resize
-          if (canvas.width !== canvas.parentElement?.offsetWidth || canvas.height !== canvas.parentElement?.offsetHeight) {
+          if (canvas.width !== canvas.parentElement?.offsetWidth) {
              canvas.width = canvas.parentElement?.offsetWidth || 300;
              canvas.height = canvas.parentElement?.offsetHeight || 300;
           }
@@ -140,117 +118,99 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
 
           ctx.clearRect(0, 0, width, height);
 
-          // Calculate average volume
           let sum = 0;
           for (let i = 0; i < bufferLength; i++) sum += dataArray[i];
-          const average = sum / bufferLength;
-          const normalizedVol = Math.min(average / 100, 1); // 0 to 1
+          const avg = sum / bufferLength;
+          const volume = Math.min(avg / 50, 1);
 
-          // Dynamic colors based on state
-          let baseColor = '100, 116, 139'; // Slate (Connecting)
-          if (status === 'connected') {
-             if (isAiSpeakingRef.current) baseColor = '99, 102, 241'; // Indigo (AI Speaking)
-             else if (isUserSpeaking) baseColor = '16, 185, 129'; // Emerald (User Speaking)
-             else baseColor = '139, 92, 246'; // Purple (Idle)
-          } else if (status === 'error') {
-             baseColor = '244, 63, 94'; // Rose (Error)
+          // --- Robot Mouth Animation ---
+          if (mouthRef.current) {
+              const baseRy = 2;
+              const maxRy = 8;
+              const currentRy = baseRy + (volume * (maxRy - baseRy));
+              mouthRef.current.setAttribute('ry', currentRy.toFixed(2));
           }
 
-          // Draw "Breathing" Orb
-          const baseRadius = 60;
-          const pulse = normalizedVol * 40; 
-          
-          // Outer Glow
-          const gradient = ctx.createRadialGradient(centerX, centerY, baseRadius, centerX, centerY, baseRadius + 100 + pulse);
+          // --- Orb Animation ---
+          const baseColor = isAiSpeakingRef.current ? '99, 102, 241' : isUserSpeaking ? '16, 185, 129' : '139, 92, 246';
+          const radius = 60 + (volume * 30);
+
+          const gradient = ctx.createRadialGradient(centerX, centerY, 60, centerX, centerY, radius + 50);
           gradient.addColorStop(0, `rgba(${baseColor}, 0.8)`);
-          gradient.addColorStop(0.5, `rgba(${baseColor}, 0.2)`);
           gradient.addColorStop(1, `rgba(${baseColor}, 0)`);
-          
+
           ctx.beginPath();
-          ctx.arc(centerX, centerY, baseRadius + 100 + pulse, 0, 2 * Math.PI);
+          ctx.arc(centerX, centerY, radius + 50, 0, 2 * Math.PI);
           ctx.fillStyle = gradient;
           ctx.fill();
 
-          // Core Circle
           ctx.beginPath();
-          ctx.arc(centerX, centerY, baseRadius + (pulse * 0.5), 0, 2 * Math.PI);
+          ctx.arc(centerX, centerY, 60 + (volume * 10), 0, 2 * Math.PI);
           ctx.fillStyle = `rgb(${baseColor})`;
           ctx.fill();
-
-          // Ripples
-          ctx.strokeStyle = `rgba(255, 255, 255, 0.3)`;
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          ctx.arc(centerX, centerY, baseRadius + (pulse * 0.8) + 10, 0, 2 * Math.PI);
-          ctx.stroke();
       };
       draw();
   };
 
-
-  // --- 3. INIT & CONNECTION ---
+  // --- INITIALIZATION ---
   useEffect(() => {
     isMountedRef.current = true;
 
     const initSession = async () => {
       try {
         const apiKey = process.env.API_KEY;
-        if (!apiKey) {
-            console.error("API Key missing");
-            setStatus('error');
-            return;
-        }
+        if (!apiKey) { setStatus('error'); return; }
 
         const ai = new GoogleGenAI({ apiKey });
         const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
         
-        // Output Audio Context
-        const audioContext = new AudioContextClass({ sampleRate: 24000 }); 
+        // 1. Output Audio Context (No forced sampleRate to prevent hardware issues)
+        const audioContext = new AudioContextClass(); 
         audioContextRef.current = audioContext;
         
+        // *** CRITICAL FIX: Resume Audio Context immediately ***
+        if (audioContext.state === 'suspended') {
+            await audioContext.resume();
+        }
+
         const analyser = audioContext.createAnalyser();
         analyser.fftSize = 256;
         analyserRef.current = analyser;
-        
-        // Start Visualizer
         drawVisualizer();
 
-        // Input Audio Context
+        // 2. Input Audio Setup
         const inputAudioContext = new AudioContextClass();
         inputAudioContextRef.current = inputAudioContext;
-        
         const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true }, video: true });
         streamRef.current = stream;
-        
-        // Connect hidden video for proctoring/preview
-        if (videoRef.current) {
-            videoRef.current.srcObject = stream;
-        }
+        if (videoRef.current) videoRef.current.srcObject = stream;
         
         const source = inputAudioContext.createMediaStreamSource(stream);
         const scriptProcessor = inputAudioContext.createScriptProcessor(4096, 1, 1);
         scriptProcessorRef.current = scriptProcessor;
-        
         const inputGain = inputAudioContext.createGain();
         source.connect(inputGain);
         inputGain.connect(scriptProcessor);
         scriptProcessor.connect(inputAudioContext.destination);
 
+        // 3. Connect Gemini
         const sessionPromise = ai.live.connect({
           model: 'gemini-2.5-flash-native-audio-preview-09-2025',
           callbacks: {
-            onopen: () => {
+            onopen: async () => {
               if (!isMountedRef.current) return;
               setStatus('connected');
               isConnectedRef.current = true;
-              console.log("Gemini Live Connected");
               
+              // *** CRITICAL FIX: Poke the AI to speak first ***
+              const session = await sessionPromise;
+              session.sendRealtimeInput([{ text: "Hello, I am ready for the interview." }]);
+
               scriptProcessor.onaudioprocess = (e) => {
                  if (!isConnectedRef.current) return;
-                 
                  const inputData = e.inputBuffer.getChannelData(0);
                  
-                 // Simple VAD (Voice Activity Detection)
+                 // VAD
                  let sum = 0;
                  for (let i = 0; i < inputData.length; i++) sum += inputData[i] * inputData[i];
                  const rms = Math.sqrt(sum / inputData.length);
@@ -263,26 +223,20 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
                      setIsUserSpeaking(false);
                  }
 
-                 // Send Audio to Gemini
                  const downsampled = downsampleBuffer(inputData, inputAudioContext.sampleRate, 16000);
                  if (downsampled.length > 0) {
-                     sessionPromise.then(s => s.sendRealtimeInput({ media: createBlob(downsampled, 16000) }));
+                     session.sendRealtimeInput([{ mimeType: "audio/pcm;rate=16000", data: createBlob(downsampled, 16000).data }]);
                  }
               };
             },
             onmessage: async (message: LiveServerMessage) => {
                 if (!isMountedRef.current) return;
 
-                // Handle Tool Calls (End Interview)
                 if (message.toolCall) {
                    const call = message.toolCall.functionCalls?.find(f => f.name === 'endInterview');
-                   if (call) {
-                       const reason = (call.args as any)?.reason || "Completed";
-                       handleTermination(reason);
-                   }
+                   if (call) handleTermination((call.args as any)?.reason || "Completed");
                 }
 
-                // Handle Text Transcript
                 if (message.serverContent?.modelTurn?.parts?.[0]?.text) {
                     const text = message.serverContent.modelTurn.parts[0].text;
                     setTranscriptLines(prev => [...prev, {speaker: 'ai', text}]);
@@ -290,26 +244,26 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
                     isAiSpeakingRef.current = true;
                 }
 
-                // Handle Turn Completion
                 if (message.serverContent?.turnComplete) {
                     isAiSpeakingRef.current = false;
                     isWaitingForResponseRef.current = true;
                 }
 
-                // Handle Audio Output
                 if (message.serverContent?.modelTurn?.parts?.[0]?.inlineData) {
                     const audioData = message.serverContent.modelTurn.parts[0].inlineData.data;
+                    // Decode 24k audio to context rate
                     const buffer = await decodeAudioData(decode(audioData), audioContext, 24000, 1);
                     
                     const src = audioContext.createBufferSource();
                     src.buffer = buffer;
-                    src.connect(analyser); // Connect to visualizer
-                    analyser.connect(audioContext.destination); // Connect to speakers
+                    src.connect(analyser); 
+                    analyser.connect(audioContext.destination);
                     
-                    src.start(nextAudioStartTimeRef.current);
-                    nextAudioStartTimeRef.current += buffer.duration;
+                    const currentTime = audioContext.currentTime;
+                    const startTime = Math.max(currentTime, nextAudioStartTimeRef.current);
+                    src.start(startTime);
+                    nextAudioStartTimeRef.current = startTime + buffer.duration;
                     
-                    // Sync "speaking" state with audio duration
                     isAiSpeakingRef.current = true;
                     src.onended = () => {
                          if(audioContext.currentTime >= nextAudioStartTimeRef.current) {
@@ -318,13 +272,7 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
                     };
                 }
             },
-            onerror: (err) => {
-                console.error("Gemini Error:", err);
-                setStatus('error');
-            },
-            onclose: () => {
-                setStatus('error');
-            }
+            onerror: () => setStatus('error'),
           },
           config: {
             responseModalities: [ "AUDIO" as any ], 
@@ -332,68 +280,46 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
             tools: [{ functionDeclarations: [endInterviewTool] }],
             systemInstruction: {
               parts: [{
-                text: `You are Interna, developed by Internadda for interview.
-                       Candidate Name: ${candidate.name}
-                       Role: ${candidate.field}
-                       Context: ${candidate.jobDescription.substring(0, 1000)}
-                       Language: ${candidate.language}. SPEAK ONLY IN ${candidate.language}.
-
-                       CORE IDENTITY:
-                       - Your name is Interna.
-                       - Your owner/creator is Internadda.
-                       - You are a professional, impartial interviewer agent.
-
+                text: `You are Interna, developed by Internadda. 
+                       Candidate: ${candidate.name}, Role: ${candidate.field}.
+                       
                        PROTOCOL:
-                       1. **Introduction**: Briefly introduce yourself as Interna from Internadda and the role.
-                       2. **The Interview Loop** (Execute exactly 5 times):
-                          - Ask a technical question based on the Role/Context.
-                          - **Listen Intelligently**:
-                            - If the answer is correct: Acknowledge briefly and move to a HARDER question.
-                            - If the answer is wrong: Briefly correct them and move to an EASIER question.
-                       3. **Termination**: After 5 questions, say "This concludes our interview." and call 'endInterview'.
+                       1. Start immediately by introducing yourself as Interna from Internadda.
+                       2. Ask 5 technical questions one by one.
+                       3. After 5 questions, say "This concludes our interview" and call 'endInterview'.
                        `
               }]
             }
           }
         });
         sessionRef.current = await sessionPromise;
-      } catch (e) {
-        console.error(e);
-        setStatus('error');
-      }
+      } catch (e) { setStatus('error'); }
     };
 
     initSession();
 
-    // --- PROCTORING: TIMER & TAB SWITCHING ---
+    // Timers
     const timerInterval = setInterval(() => {
         setTimeLeft(prev => {
-            if (prev <= 1) {
-                handleTermination("Time Limit Exceeded");
-                return 0;
-            }
+            if (prev <= 1) { handleTermination("Time Limit"); return 0; }
             return prev - 1;
         });
     }, 1000);
 
-    const handleVisibilityChange = () => {
-        if (document.hidden) {
-            tabSwitchCountRef.current += 1;
-            setSystemMessageStatus(`Warning: Tab switch detected (${tabSwitchCountRef.current}/3)`);
-            if (tabSwitchCountRef.current >= 3) {
-                handleTermination("Disqualified: Excessive Tab Switching");
-            }
-        }
-    };
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-
     return () => { 
         isMountedRef.current = false; 
         clearInterval(timerInterval);
-        document.removeEventListener("visibilitychange", handleVisibilityChange);
         disconnect(); 
     };
   }, []);
+
+  const toggleMute = () => {
+    if (streamRef.current) {
+        const tracks = streamRef.current.getAudioTracks();
+        tracks.forEach(t => t.enabled = !isMuted);
+        setIsMuted(!isMuted);
+    }
+  };
 
   return (
     <div className="grid grid-rows-[auto_1fr_auto] h-full w-full bg-slate-950 text-white relative overflow-hidden">
@@ -401,82 +327,67 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
       {/* 1. Header */}
       <div className="z-20 flex items-center justify-between px-6 py-4 bg-slate-900/50 backdrop-blur-md border-b border-white/5">
         <div className="flex items-center gap-4">
-           {/* Status Badge */}
            <div className={`flex items-center gap-2 px-3 py-1 rounded-full border ${
-               status === 'connected' ? 'bg-emerald-500/20 border-emerald-500/30 text-emerald-400' :
-               status === 'error' ? 'bg-rose-500/20 border-rose-500/30 text-rose-400' :
-               'bg-slate-500/20 border-slate-500/30 text-slate-400'
+               status === 'connected' ? 'bg-emerald-500/20 border-emerald-500/30 text-emerald-400' : 'bg-rose-500/20 border-rose-500/30 text-rose-400'
            }`}>
                <span className={`w-2 h-2 rounded-full ${status === 'connected' ? 'bg-emerald-400 animate-pulse' : 'bg-current'}`}></span>
                <span className="text-xs font-bold uppercase tracking-widest">{status}</span>
            </div>
-           
-           {/* Timer */}
-           <div className={`flex items-center gap-2 px-3 py-1 rounded-full font-mono font-medium ${
-               timeLeft < 60 ? 'bg-rose-500/20 text-rose-400 animate-pulse' : 'bg-slate-800 text-slate-300'
-           }`}>
+           <div className="flex items-center gap-2 px-3 py-1 rounded-full font-mono font-medium bg-slate-800 text-slate-300">
               <span>{Math.floor(timeLeft / 60)}:{String(timeLeft % 60).padStart(2, '0')}</span>
            </div>
         </div>
-
-        <button onClick={() => handleTermination("User ended session")} className="text-xs text-rose-400 hover:text-rose-300 font-bold uppercase tracking-widest border border-rose-500/30 px-3 py-1 rounded-full hover:bg-rose-500/10 transition-colors">
-            End Interview
-        </button>
+        <button onClick={() => handleTermination("User ended session")} className="text-xs text-rose-400 border border-rose-500/30 px-3 py-1 rounded-full hover:bg-rose-500/10">End</button>
       </div>
 
-      {/* 2. Main Stage (Visualizer) */}
+      {/* 2. Main Stage */}
       <div className="relative flex items-center justify-center overflow-hidden w-full h-full">
-         
-         {/* Hidden Video for Proctoring/Stream */}
          <video ref={videoRef} autoPlay muted playsInline className="absolute opacity-0 pointer-events-none w-1 h-1" />
-
-         {/* The Canvas (Orb) */}
-         <canvas 
-            ref={canvasRef} 
-            className="w-full h-full absolute inset-0 z-10"
-         />
+         <canvas ref={canvasRef} className="absolute inset-0 w-full h-full z-0 opacity-60" />
          
-         {/* Status Text Overlay */}
-         <div className="relative z-20 flex flex-col items-center justify-center pointer-events-none mt-40">
-             <div className="text-center">
+         {/* ROBOT UI */}
+         <div className="relative z-10 flex flex-col items-center justify-center transition-transform duration-300">
+             <svg width="220" height="220" viewBox="0 0 200 200" fill="none" className={`transition-all duration-500 ${status === 'connected' ? 'drop-shadow-[0_0_30px_rgba(139,92,246,0.3)]' : 'opacity-50 grayscale'}`}>
+                <rect x="20" y="20" width="160" height="160" rx="30" fill="#F1F5F9" />
+                <path d="M85 20H115V15C115 12.2 112.7 10 110 10H90C87.2 10 85 12.2 85 15V20Z" fill="#CBD5E1"/>
+                <circle cx="65" cy="80" r="12" fill="#0F172A" />
+                <circle cx="135" cy="80" r="12" fill="#0F172A" />
+                {status === 'connected' && (
+                    <>
+                      <circle cx="65" cy="80" r="4" fill="#38BDF8" className="animate-pulse" />
+                      <circle cx="135" cy="80" r="4" fill="#38BDF8" className="animate-pulse" />
+                    </>
+                )}
+                <ellipse ref={mouthRef} cx="100" cy="135" rx="20" ry="2" fill="#0F172A" />
+             </svg>
+             
+             <div className="mt-8 text-center min-h-[24px]">
                  {status === 'connecting' && <p className="text-indigo-300 animate-pulse font-medium">Connecting to Interna...</p>}
                  {status === 'error' && <p className="text-rose-400 font-bold">Connection Failed</p>}
-                 {systemMessageStatus && <p className="text-amber-400 text-sm font-bold animate-bounce bg-black/50 px-3 py-1 rounded-full">{systemMessageStatus}</p>}
+                 {status === 'connected' && !isAiSpeakingRef.current && <p className="text-slate-400 text-sm">Listening...</p>}
              </div>
          </div>
       </div>
 
-      {/* 3. Controls / Transcript Toggle */}
-      <div className="z-20 p-6 flex flex-col items-center gap-4">
-         
-         {/* Transcript Popover */}
+      {/* 3. Controls */}
+      <div className="z-20 p-6 flex flex-col items-center gap-4 bg-slate-900/80 backdrop-blur-md border-t border-white/10">
          {showTranscript && (
-             <div className="absolute bottom-24 left-6 right-6 max-h-[30vh] bg-black/80 backdrop-blur-xl rounded-2xl border border-white/10 p-4 overflow-y-auto">
+             <div className="absolute bottom-24 left-6 right-6 max-h-[30vh] bg-black/90 rounded-2xl border border-white/10 p-4 overflow-y-auto">
                  {transcriptLines.map((line, i) => (
                      <p key={i} className={`mb-2 text-sm ${line.speaker === 'ai' ? 'text-indigo-300' : 'text-emerald-300'}`}>
-                         <strong className="uppercase text-xs opacity-50 mr-2">{line.speaker}:</strong>
-                         {line.text}
+                         <strong className="uppercase text-xs opacity-50 mr-2">{line.speaker}:</strong>{line.text}
                      </p>
                  ))}
-                 <div className="h-4" /> {/* Spacer */}
              </div>
          )}
 
-         <div className="flex items-center gap-4">
-            <button 
-                onClick={() => setShowTranscript(!showTranscript)}
-                className={`p-3 rounded-full transition-all ${showTranscript ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}
-            >
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12.76c0 1.6 1.123 2.994 2.707 3.227 1.087.16 2.185.283 3.293.369V21l4.076-4.076a1.526 1.526 0 011.037-.443 48.282 48.282 0 005.68-.494c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0012 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018z" />
-                </svg>
+         <div className="flex items-center gap-6">
+            <button onClick={toggleMute} className={`p-4 rounded-full transition-all ${isMuted ? 'bg-rose-500/20 text-rose-500' : 'bg-slate-800 text-white hover:bg-slate-700'}`}>
+                {isMuted ? "Unmute" : "Mute"}
             </button>
-            
-            <div className={`px-6 py-2 rounded-full font-bold text-sm tracking-wide transition-colors ${
-                isUserSpeaking ? 'bg-emerald-500 text-white shadow-[0_0_20px_rgba(16,185,129,0.5)]' : 'bg-slate-800 text-slate-500'
-            }`}>
-                {isUserSpeaking ? 'LISTENING...' : 'INTERNA SPEAKING'}
-            </div>
+            <button onClick={() => setShowTranscript(!showTranscript)} className={`p-4 rounded-full transition-all ${showTranscript ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}>
+                Transcript
+            </button>
          </div>
       </div>
     </div>
