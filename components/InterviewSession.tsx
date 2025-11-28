@@ -201,8 +201,12 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
               
               // *** TRIGGER AI SPEECH IMMEDIATELY ***
               const session = await sessionPromise;
-              // FIX 2: Sending a simple empty string is the most reliable way to initiate the first turn
-              session.sendRealtimeInput([{ text: "" }]);
+              // FIX 4: Robust trigger message with a slight delay to ensure the session is ready.
+              setTimeout(() => {
+                  if (sessionRef.current) {
+                      sessionRef.current.sendRealtimeInput([{ text: "Start the interview now." }]);
+                  }
+              }, 100);
 
               scriptProcessor.onaudioprocess = (e) => {
                  if (!isConnectedRef.current) return;
@@ -255,7 +259,6 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
                     src.buffer = buffer;
                     src.connect(analyser); 
                     // FIX 3.2: Removed redundant connection to audioContext.destination
-                    // analyser.connect(audioContext.destination);
                     
                     const currentTime = audioContext.currentTime;
                     const startTime = Math.max(currentTime, nextAudioStartTimeRef.current);
@@ -272,7 +275,6 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
             onerror: () => setStatus('error'),
           },
           config: {
-            // FIX 1: Corrected property name from responseModalities (plural) to responseModality (singular)
             responseModality: "AUDIO", 
             speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } } },
             tools: [{ functionDeclarations: [endInterviewTool] }],
