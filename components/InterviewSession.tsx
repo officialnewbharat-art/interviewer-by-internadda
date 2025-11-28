@@ -192,7 +192,7 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
         const sessionPromise = ai.live.connect({
           model: 'gemini-2.5-flash-native-audio-preview-09-2025',
           callbacks: {
-            onopen: async () => {
+           onopen: async () => {
               if (!isMountedRef.current) return;
               setStatus('connected');
               isConnectedRef.current = true;
@@ -200,7 +200,8 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
               // *** TRIGGER AI SPEECH IMMEDIATELY ***
               const session = await sessionPromise;
               // Sending this empty text message forces the model to generate the first turn based on system instructions
-              session.sendRealtimeInput([{ text: "The user has joined. Introduce yourself immediately." }]);
+              // session.sendRealtimeInput([{ text: "The user has joined. Introduce yourself immediately." }]); // OLD LINE
+              session.sendRealtimeInput([{ text: "" }]); // FIX: Sending a simple empty string is often the most reliable way to initiate the first turn when an explicit instruction is already in the system prompt.
 
               scriptProcessor.onaudioprocess = (e) => {
                  if (!isConnectedRef.current) return;
