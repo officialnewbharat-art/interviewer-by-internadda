@@ -172,6 +172,8 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
         analyser.fftSize = 256;
         analyserRef.current = analyser;
         drawVisualizer();
+        // FIX 3.1: Connect analyser permanently to the destination
+        analyser.connect(audioContext.destination);
 
         // 2. Input Audio Setup
         const inputAudioContext = new AudioContextClass();
@@ -192,16 +194,15 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
         const sessionPromise = ai.live.connect({
           model: 'gemini-2.5-flash-native-audio-preview-09-2025',
           callbacks: {
-           onopen: async () => {
+            onopen: async () => {
               if (!isMountedRef.current) return;
               setStatus('connected');
               isConnectedRef.current = true;
               
               // *** TRIGGER AI SPEECH IMMEDIATELY ***
               const session = await sessionPromise;
-              // Sending this empty text message forces the model to generate the first turn based on system instructions
-              // session.sendRealtimeInput([{ text: "The user has joined. Introduce yourself immediately." }]); // OLD LINE
-              session.sendRealtimeInput([{ text: "" }]); // FIX: Sending a simple empty string is often the most reliable way to initiate the first turn when an explicit instruction is already in the system prompt.
+              // FIX 2: Sending a simple empty string is the most reliable way to initiate the first turn
+              session.sendRealtimeInput([{ text: "" }]);
 
               scriptProcessor.onaudioprocess = (e) => {
                  if (!isConnectedRef.current) return;
@@ -253,7 +254,8 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
                     const src = audioContext.createBufferSource();
                     src.buffer = buffer;
                     src.connect(analyser); 
-                    analyser.connect(audioContext.destination);
+                    // FIX 3.2: Removed redundant connection to audioContext.destination
+                    // analyser.connect(audioContext.destination);
                     
                     const currentTime = audioContext.currentTime;
                     const startTime = Math.max(currentTime, nextAudioStartTimeRef.current);
@@ -262,17 +264,16 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
                     
                     isAiSpeakingRef.current = true;
                     src.onended = () => {
-                         if(audioContext.currentTime >= nextAudioStartTimeRef.current) {
-                             isAiSpeakingRef.current = false;
-                         }
+                         // Rely primarily on `turnComplete` but setting to false here helps the visualizer reset.
+                         isAiSpeakingRef.current = false;
                     };
                 }
             },
             onerror: () => setStatus('error'),
-            
           },
           config: {
-            responseModalities: "AUDIO", 
+            // FIX 1: Corrected property name from responseModalities (plural) to responseModality (singular)
+            responseModality: "AUDIO", 
             speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } } },
             tools: [{ functionDeclarations: [endInterviewTool] }],
             systemInstruction: {
