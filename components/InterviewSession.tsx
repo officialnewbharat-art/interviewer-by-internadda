@@ -31,6 +31,7 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
   const [isUserSpeaking, setIsUserSpeaking] = useState(false);
   const [systemMessageStatus, setSystemMessageStatus] = useState<string | null>(null);
   const [timeLeft, setTimeLeft] = useState(600);
+  const [isReadyToStart, setIsReadyToStart] = useState(false); // New state to show "Start" button
 
   // Refs
   const isMountedRef = useRef<boolean>(false);
@@ -150,12 +151,28 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
       };
       draw();
   };
+  
+  // FIX 6: New function to handle the start after media setup is complete
+  const handleStart = async () => {
+    // 1. Ensure AudioContext is running before triggering AI response
+    if (audioContextRef.current && audioContextRef.current.state === 'suspended') {
+        await audioContextRef.current.resume();
+    }
+    
+    // 2. Send the explicit trigger to the AI session
+    const session = sessionRef.current;
+    if (session) {
+        session.sendRealtimeInput([{ text: "Start the interview now." }]);
+        setStatus('connected'); // Set status connected after trigger
+    }
+  };
+
 
   // --- INITIALIZATION ---
   useEffect(() => {
     isMountedRef.current = true;
-
-    const initSession = async () => {
+    
+    const initializeMediaAndConnection = async () => {
       try {
         const apiKey = process.env.API_KEY;
         if (!apiKey) { setStatus('error'); return; }
@@ -166,8 +183,9 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
         // 1. Output Audio Context
         const audioContext = new AudioContextClass(); 
         audioContextRef.current = audioContext;
-        // Ensure AudioContext is not suspended (important for first playback)
-        if (audioContext.state === 'suspended') await audioContext.resume();
+        
+        // Do NOT call resume here, as it may be suspended immediately after.
+        // We rely on the `handleStart` button click for resumption.
 
         const analyser = audioContext.createAnalyser();
         analyser.fftSize = 256;
@@ -179,6 +197,7 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
         // 2. Input Audio Setup
         const inputAudioContext = new AudioContextClass();
         inputAudioContextRef.current = inputAudioContext;
+        // Request media, but don't start sending data until the user clicks start
         const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true }, video: true });
         streamRef.current = stream;
         if (videoRef.current) videoRef.current.srcObject = stream;
@@ -197,22 +216,12 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
           callbacks: {
             onopen: async () => {
               if (!isMountedRef.current) return;
-              setStatus('connected');
+              // Status remains 'connecting' until user clicks START
               isConnectedRef.current = true;
+              setIsReadyToStart(true); // Indicate readiness
               
-              // *** TRIGGER AI SPEECH IMMEDIATELY ***
-              const session = await sessionPromise;
-              // FIX 4: Robust trigger message with a slight delay to ensure the session is ready.
-              setTimeout(() => {
-                  if (sessionRef.current) {
-                      // Attempt to resume the audio context again just before sending the first prompt
-                      if (audioContextRef.current?.state === 'suspended') {
-                          audioContextRef.current.resume();
-                      }
-                      sessionRef.current.sendRealtimeInput([{ text: "Start the interview now." }]);
-                  }
-              }, 100);
-
+              // *** AI TRIGGER MOVED TO handleStart FUNCTION ***
+              
               scriptProcessor.onaudioprocess = (e) => {
                  if (!isConnectedRef.current) return;
                  const inputData = e.inputBuffer.getChannelData(0);
@@ -232,7 +241,7 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
 
                  const downsampled = downsampleBuffer(inputData, inputAudioContext.sampleRate, 16000);
                  if (downsampled.length > 0) {
-                     session.sendRealtimeInput([{ mimeType: "audio/pcm;rate=16000", data: createBlob(downsampled, 16000).data }]);
+                     sessionRef.current.sendRealtimeInput([{ mimeType: "audio/pcm;rate=16000", data: createBlob(downsampled, 16000).data }]);
                  }
               };
             },
@@ -263,7 +272,6 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
                     const src = audioContext.createBufferSource();
                     src.buffer = buffer;
                     src.connect(analyser); 
-                    // FIX 3.2: Removed redundant connection to audioContext.destination
                     
                     const currentTime = audioContext.currentTime;
                     const startTime = Math.max(currentTime, nextAudioStartTimeRef.current);
@@ -271,14 +279,15 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
                     nextAudioStartTimeRef.current = startTime + buffer.duration;
                     
                     isAiSpeakingRef.current = true;
-                    // FIX 5: Simplified onended handler to just reset the speaking flag.
+                    // FIX 5: Simplified onended handler
                     src.onended = () => {
                          isAiSpeakingRef.current = false;
                     };
                 }
             },
             onerror: () => setStatus('error'),
-          },
+          }
+          ,
           config: {
             responseModality: "AUDIO", 
             speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } } },
@@ -303,10 +312,11 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
           }
         });
         sessionRef.current = await sessionPromise;
+        
       } catch (e) { setStatus('error'); }
     };
 
-    initSession();
+    initializeMediaAndConnection();
 
     const timerInterval = setInterval(() => {
         setTimeLeft(prev => {
@@ -330,6 +340,13 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
     }
   };
 
+  const getStatusText = () => {
+      if (status === 'error') return 'Connection Failed';
+      if (status === 'connecting') return 'Connecting...';
+      if (isReadyToStart) return 'Ready. Click Start!';
+      return 'Connected';
+  }
+
   return (
     <div className="grid grid-rows-[auto_1fr_auto] h-full w-full bg-slate-950 text-white relative overflow-hidden">
       
@@ -340,7 +357,7 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
                status === 'connected' ? 'bg-emerald-500/20 border-emerald-500/30 text-emerald-400' : 'bg-rose-500/20 border-rose-500/30 text-rose-400'
            }`}>
                <span className={`w-2 h-2 rounded-full ${status === 'connected' ? 'bg-emerald-400 animate-pulse' : 'bg-current'}`}></span>
-               <span className="text-xs font-bold uppercase tracking-widest">{status}</span>
+               <span className="text-xs font-bold uppercase tracking-widest">{getStatusText()}</span>
            </div>
            <div className="flex items-center gap-2 px-3 py-1 rounded-full font-mono font-medium bg-slate-800 text-slate-300">
               <span>{Math.floor(timeLeft / 60)}:{String(timeLeft % 60).padStart(2, '0')}</span>
@@ -374,6 +391,17 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
                  {status === 'connecting' && <p className="text-indigo-300 animate-pulse font-medium">Connecting to Interna...</p>}
                  {status === 'error' && <p className="text-rose-400 font-bold">Connection Failed</p>}
                  {status === 'connected' && !isAiSpeakingRef.current && <p className="text-slate-400 text-sm">Listening...</p>}
+                 
+                 {/* START BUTTON OVERLAY */}
+                 {isReadyToStart && status !== 'connected' && (
+                     <button
+                        onClick={handleStart}
+                        className="bg-indigo-600 text-white font-bold py-3 px-6 rounded-full shadow-lg hover:bg-indigo-700 transition-colors"
+                     >
+                        Start Interview Now
+                     </button>
+                 )}
+
              </div>
          </div>
       </div>
