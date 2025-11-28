@@ -146,11 +146,11 @@ export const Instructions: React.FC<InstructionsProps> = ({ onStart }) => {
               
               // Thresholds (0-255 scale)
               // < 10: Quiet room
-              // 10-30: Acceptable background noise (AC, distant sounds)
-              // > 30: Too loud
+              // 10-40: Acceptable background noise (AC, distant sounds)
+              // > 40: Too loud
               if (averageVolume < 10) {
                   setNoiseStatus('good');
-              } else if (averageVolume < 30) {
+              } else if (averageVolume < 40) { // FIX 4: Increased threshold to 40 for 'fair' noise status
                   setNoiseStatus('fair');
               } else {
                   setNoiseStatus('bad');
