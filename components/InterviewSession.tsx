@@ -268,9 +268,10 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
                 }
             },
             onerror: () => setStatus('error'),
+            
           },
           config: {
-            responseModalities: [ "AUDIO" as any ], 
+            responseModalities: "AUDIO", 
             speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } } },
             tools: [{ functionDeclarations: [endInterviewTool] }],
             systemInstruction: {
