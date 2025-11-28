@@ -166,6 +166,7 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
         // 1. Output Audio Context
         const audioContext = new AudioContextClass(); 
         audioContextRef.current = audioContext;
+        // Ensure AudioContext is not suspended (important for first playback)
         if (audioContext.state === 'suspended') await audioContext.resume();
 
         const analyser = audioContext.createAnalyser();
@@ -204,6 +205,10 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
               // FIX 4: Robust trigger message with a slight delay to ensure the session is ready.
               setTimeout(() => {
                   if (sessionRef.current) {
+                      // Attempt to resume the audio context again just before sending the first prompt
+                      if (audioContextRef.current?.state === 'suspended') {
+                          audioContextRef.current.resume();
+                      }
                       sessionRef.current.sendRealtimeInput([{ text: "Start the interview now." }]);
                   }
               }, 100);
@@ -266,8 +271,8 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ candidate, o
                     nextAudioStartTimeRef.current = startTime + buffer.duration;
                     
                     isAiSpeakingRef.current = true;
+                    // FIX 5: Simplified onended handler to just reset the speaking flag.
                     src.onended = () => {
-                         // Rely primarily on `turnComplete` but setting to false here helps the visualizer reset.
                          isAiSpeakingRef.current = false;
                     };
                 }
