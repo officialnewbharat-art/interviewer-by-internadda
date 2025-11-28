@@ -1,4 +1,3 @@
-
 export interface AudioBlob {
   data: string;
   mimeType: string;
@@ -29,7 +28,10 @@ export async function decodeAudioData(
   sampleRate: number,
   numChannels: number,
 ): Promise<AudioBuffer> {
-  const dataInt16 = new Int16Array(data.buffer);
+  // FIX 5: Create a copy of the buffer's contents to ensure byte alignment for the Int16Array view.
+  const dataBuffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+
+  const dataInt16 = new Int16Array(dataBuffer);
   const frameCount = dataInt16.length / numChannels;
   const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
 
